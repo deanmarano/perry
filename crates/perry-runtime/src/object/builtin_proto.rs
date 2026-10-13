@@ -500,7 +500,8 @@ fn trace_withdrawal(family: usize, site: &'static str) {
         "\n",
     ] {
         // SAFETY: writes a borrowed byte string to fd 2.
-        unsafe { libc::write(2, part.as_ptr().cast(), part.len()) };
+        // The count is size_t on unix and c_uint on windows: `as _` takes either.
+        unsafe { libc::write(2, part.as_ptr().cast(), part.len() as _) };
     }
 }
 
