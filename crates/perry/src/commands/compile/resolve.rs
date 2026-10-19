@@ -310,9 +310,10 @@ pub(super) fn enumerate_installed_package_roots(
     //
     // Walk every ancestor in Node resolution order. A package-local cache or
     // a workspace member's node_modules must not hide packages further up.
+    let mut visited = HashSet::new();
     for nm in ancestor_node_modules_dirs(project_root) {
-        collect_packages_in_node_modules(&nm, &mut out);
-        collect_packages_in_bun_store(&nm, &mut out);
+        collect_packages_in_node_modules(&nm, &mut out, &mut visited);
+        collect_packages_in_bun_store(&nm, &mut out, &mut visited);
     }
     // Symlinks and recursively discovered nested packages can expose the same
     // physical root more than once. Keep its first occurrence, preserving the
@@ -332,7 +333,11 @@ pub(super) fn enumerate_installed_package_roots(
 /// ordinary `node_modules` directory, so walk it with the same collector.
 /// `node_modules` need not exist (`fs::read_dir` on the derived `.bun` path
 /// simply fails and returns).
-fn collect_packages_in_bun_store(node_modules: &Path, out: &mut HashMap<String, Vec<PathBuf>>) {
+fn collect_packages_in_bun_store(
+    node_modules: &Path,
+    out: &mut HashMap<String, Vec<PathBuf>>,
+    visited: &mut HashSet<PathBuf>,
+) {
     let bun_dir = node_modules.join(".bun");
     let entries = match fs::read_dir(&bun_dir) {
         Ok(e) => e,
@@ -341,14 +346,24 @@ fn collect_packages_in_bun_store(node_modules: &Path, out: &mut HashMap<String, 
     for entry in entries.flatten() {
         let nested = entry.path().join("node_modules");
         if nested.is_dir() {
-            collect_packages_in_node_modules(&nested, out);
+            collect_packages_in_node_modules(&nested, out, visited);
         }
     }
 }
 
 /// Walk a single `node_modules` directory, recording each package name and
-/// recursing into any nested `node_modules` it contains.
-fn collect_packages_in_node_modules(node_modules: &Path, out: &mut HashMap<String, Vec<PathBuf>>) {
+/// recursing into any nested `node_modules` it contains. `visited` holds the
+/// canonical path of each directory already walked, so a symlink cycle
+/// between workspace members terminates (#12822).
+fn collect_packages_in_node_modules(
+    node_modules: &Path,
+    out: &mut HashMap<String, Vec<PathBuf>>,
+    visited: &mut HashSet<PathBuf>,
+) {
+    let canonical = fs::canonicalize(node_modules).unwrap_or_else(|_| node_modules.to_path_buf());
+    if !visited.insert(canonical) {
+        return;
+    }
     let entries = match fs::read_dir(node_modules) {
         Ok(e) => e,
         Err(_) => return,
@@ -382,7 +397,7 @@ fn collect_packages_in_node_modules(node_modules: &Path, out: &mut HashMap<Strin
                         .push(sub_path.clone());
                     let nested = sub_path.join("node_modules");
                     if nested.is_dir() {
-                        collect_packages_in_node_modules(&nested, out);
+                        collect_packages_in_node_modules(&nested, out, visited);
                     }
                 }
             }
@@ -391,7 +406,7 @@ fn collect_packages_in_node_modules(node_modules: &Path, out: &mut HashMap<Strin
         out.entry(name.to_string()).or_default().push(path.clone());
         let nested = path.join("node_modules");
         if nested.is_dir() {
-            collect_packages_in_node_modules(&nested, out);
+            collect_packages_in_node_modules(&nested, out, visited);
         }
     }
 }

@@ -1648,6 +1648,45 @@ mod declaration_sidecar_tests {
         );
         assert_eq!(found.len(), 5, "exactly the five real packages");
     }
+
+    /// #12822: a scope directory symlinked back to the top level makes the
+    /// `node_modules` tree infinite. Enumeration must terminate and still
+    /// report each member exactly once.
+    #[cfg(unix)]
+    #[test]
+    fn enumerate_installed_packages_terminates_on_pnpm_scope_cycle() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let nm = root.join("node_modules");
+
+        for member in ["a", "b"] {
+            std::fs::create_dir_all(root.join("packages").join(member).join("node_modules"))
+                .expect("mkdir member");
+        }
+        std::fs::create_dir_all(nm.join("@scope")).expect("mkdir scope");
+
+        for member in ["a", "b"] {
+            std::os::unix::fs::symlink(
+                root.join("packages").join(member),
+                nm.join("@scope").join(member),
+            )
+            .expect("symlink member");
+            std::os::unix::fs::symlink(
+                nm.join("@scope"),
+                root.join("packages")
+                    .join(member)
+                    .join("node_modules")
+                    .join("@scope"),
+            )
+            .expect("symlink scope back-pointer");
+        }
+
+        let found = enumerate_installed_packages(root);
+
+        assert!(found.contains("@scope/a"), "first workspace member");
+        assert!(found.contains("@scope/b"), "second workspace member");
+        assert_eq!(found.len(), 2, "exactly the two members, each once");
+    }
 }
 
 /// Issue #5039 — Node subpath imports (`#…` specifiers resolved through the
